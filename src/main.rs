@@ -9,6 +9,7 @@ use bevy:: {
 struct PlayerControl;
 
 struct FaceTowardsParent {
+    offset: Vec3,
     distance: f32,
     angle: f32,
 }
@@ -18,6 +19,7 @@ impl Default for FaceTowardsParent {
         FaceTowardsParent {
             distance: 10.0,
             angle: 30.0f32.to_radians(),
+            ..Default::default()
         }
     }
 }
@@ -51,6 +53,18 @@ fn main() {
     .add_system(player_camera_target.system())
     .add_system(perform_camera_zoom.system())
     .run();
+}
+
+fn init_player(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    commands
+        .spawn(PbrComponents {
+            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+            material: materials.add(Color::rgb(1.0, 1.0, 1.0).into()),
+            translation: Translation::new(0.0, 1.0, 0.0),
+            ..Default::default()
+        })
+        .with(PlayerControl)
+        .with(Rotation);
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
