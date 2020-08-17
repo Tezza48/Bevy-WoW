@@ -1,9 +1,6 @@
 use bevy:: {
     prelude::*,
-    input::{
-        mouse::{ MouseButtonInput, MouseMotion },
-        keyboard::{ KeyboardInput },
-    },
+    input::mouse::MouseMotion,
 };
 
 struct PlayerControl;
@@ -17,9 +14,9 @@ struct FaceTowardsParent {
 impl Default for FaceTowardsParent {
     fn default() -> Self {
         FaceTowardsParent {
+            offset: Vec3::default(),
             distance: 10.0,
             angle: 30.0f32.to_radians(),
-            ..Default::default()
         }
     }
 }
@@ -33,9 +30,7 @@ struct InputManager {
 
 #[derive(Default)]
 struct State {
-    // mouse_button_event_reader: EventReader<MouseButtonInput>,
     mouse_motion_event_reader: EventReader<MouseMotion>,
-    // cursor_moved_event_reader: EventReader<CursorMoved>,
 }
 
 fn main() {
@@ -53,18 +48,6 @@ fn main() {
     .add_system(player_camera_target.system())
     .add_system(perform_camera_zoom.system())
     .run();
-}
-
-fn init_player(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    commands
-        .spawn(PbrComponents {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-            material: materials.add(Color::rgb(1.0, 1.0, 1.0).into()),
-            translation: Translation::new(0.0, 1.0, 0.0),
-            ..Default::default()
-        })
-        .with(PlayerControl)
-        .with(Rotation);
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
@@ -85,9 +68,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         .with(Rotation)
         .with_children(|parent| {
             parent
-                .spawn(Camera3dComponents {
-                    ..Default::default()
-                })
+                .spawn(Camera3dComponents::default())
                 .with(Rotation)
                 .with(FaceTowardsParent::default());
         })
@@ -99,10 +80,6 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         .spawn(LightComponents {
             translation: Translation::new(4.0, 5.0, 4.0),
             ..Default::default()
-        // })
-        // .spawn(Camera3dComponents {
-        //     translation: Translation::new(0., 4.0, -20.0),
-        //     ..Default::default()
         });
 }
 
@@ -176,7 +153,7 @@ fn move_player(
         let fwd = transform.value.z_axis().truncate();
         let right = -transform.value.x_axis().truncate();
 
-        let delta = fwd * movement.x() + right * movement.y();
+        let delta: Vec3 = (fwd * movement.x() + right * movement.y()).into();
         if delta == Vec3::zero() { continue; }
         let delta = delta.normalize() * time.delta_seconds * 10.0;
 
@@ -187,7 +164,7 @@ fn move_player(
 fn player_camera_target(mut look: Query<(&FaceTowardsParent, &mut Translation, &mut Rotation)>) {
     for (face_towards, mut translation, mut rotation) in &mut look.iter() {
         let to = Vec3::new(0., face_towards.angle.cos(), -face_towards.angle.sin()).normalize();
-        translation.0 = to * face_towards.distance;
+        translation.0 = to * face_towards.distance + face_towards.offset;
 
         let look = Mat4::face_toward(translation.0, Vec3::zero(), Vec3::new(0.0, 1.0, 0.0));
         rotation.0 = look.to_scale_rotation_translation().1;
