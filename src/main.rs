@@ -96,9 +96,9 @@ fn process_mouse_events(
         look = event.delta;
     }
 
-    let mut zoom = 0.;
+    let mut zoom_delta = 0.;
     for event in state.mouse_wheel_event_reader.iter(&mouse_wheel_events) {
-        zoom = event.y as f32;
+        zoom_delta = event.y;
     }
 
     let zoom_sense = 10.0;
@@ -107,7 +107,7 @@ fn process_mouse_events(
     for mut player in &mut query.iter() {
         player.yaw += look.x() * time.delta_seconds;
         player.camera_pitch -= look.y() * time.delta_seconds * look_sense;
-        player.camera_distance -= zoom * time.delta_seconds * zoom_sense;
+        player.camera_distance -= zoom_delta * time.delta_seconds * zoom_sense;
     }
 }
 
