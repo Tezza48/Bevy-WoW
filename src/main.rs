@@ -1,11 +1,23 @@
-use bevy::{input::mouse::{MouseMotion, MouseWheel}, prelude::*, render::mesh::{Indices, VertexAttributeValues}};
-use bevy_rapier3d::rapier::dynamics::RigidBodyBuilder;
-use bevy_rapier3d::rapier::geometry::ColliderBuilder;
+use bevy::{
+    prelude::*,
+    input::mouse::{MouseMotion, MouseWheel},
+    render::mesh::{Indices, VertexAttributeValues},
+};
 use bevy_rapier3d::{
-    na::{Point3, Vector3},
-    physics::{RapierPhysicsPlugin, RigidBodyHandleComponent},
-    rapier::dynamics::{RigidBody, RigidBodyHandle, RigidBodySet},
-    render::RapierRenderPlugin,
+    rapier::dynamics::{
+        RigidBodyBuilder,
+        RigidBodySet,
+    },
+    rapier::geometry::ColliderBuilder,
+    na::{
+        Point3,
+        Vector3,
+        UnitQuaternion,
+    },
+    physics::{
+        RapierPhysicsPlugin,
+        RigidBodyHandleComponent,
+    },
 };
 
 struct MMOPlayer {
@@ -44,7 +56,6 @@ fn main() {
         .init_resource::<MouseState>()
         .add_plugins(DefaultPlugins)
         .add_plugin(RapierPhysicsPlugin)
-        .add_plugin(RapierRenderPlugin)
         .add_startup_system(setup.system())
         .add_system(process_mouse_events.system())
         .add_system(update_player.system())
@@ -65,14 +76,16 @@ fn setup(
         cube_material
     });
 
+    let terrain_scene = asset_server.load("terrain.gltf");
+
+    // Create the environment.
+    commands
+        .spawn(())
+        .spawn_scene(terrain_scene)
+        .with(Terrain);
+
     // Spawn camera and player, set entity for camera on player.
     let camera_entity = commands.spawn(Camera3dBundle::default()).current_entity();
-
-    let player_rigid = RigidBodyBuilder::new_dynamic()
-        .mass(1., true)
-        .translation(0., 30., 0.)
-        .linvel(0.0, 50.0, 0.0);
-    let player_coll = ColliderBuilder::cuboid(1., 1., 1.);
 
     let player_entity = commands
         .spawn(PbrBundle {
@@ -85,44 +98,35 @@ fn setup(
             camera_distance: 20.,
             ..Default::default()
         })
-        .with((player_rigid, player_coll))
         .current_entity();
 
-    let terrain_scene = asset_server.load("pentagon.gltf");
-    meshes.get(terrain_scene.clone());
+    // Append camera to player as child.
+    commands.push_children(player_entity.unwrap(), &[camera_entity.unwrap()]);
 
-    // Debug ground colliders.
-    let ground_rigid = RigidBodyBuilder::new_static();
-    let ground_collider = ColliderBuilder::cuboid(20.0, 1.0, 20.0);
 
-    commands
-        // Append camera to player as child.
-        .push_children(player_entity.unwrap(), &[camera_entity.unwrap()])
-
-        // Create the environment.
-        .spawn_scene(terrain_scene)
-        .with(Terrain)
-        // .with((ground_rigid, ground_collider))
         // .with(ground_collider.unwrap())
-        .spawn(LightBundle {
-            transform: Transform::from_translation(Vec3::new(4.0, 5.0, 4.0)),
-            ..Default::default()
-        });
+    commands.spawn(LightBundle {
+        transform: Transform::from_translation(Vec3::new(4.0, 5.0, 4.0)),
+        ..Default::default()
+    });
 }
 
 // System polls whether pentagon mesh is loaded, then initialises physics components for it and the player.
 fn load_collider(
-    mut meshes: ResMut<Assets<Mesh>>,
+    meshes: ResMut<Assets<Mesh>>,
     asset_server: Res<AssetServer>,
     mut has_loaded: ResMut<HasLoadedCollider>,
-    mut queries: QuerySet<(Query<(Entity, &Terrain)>, Query<(Entity, &MMOPlayer)>)>,
+    queries: QuerySet<(
+        Query<(Entity, &Terrain)>,
+        Query<(Entity, &MMOPlayer)>
+    )>,
     commands: &mut Commands
 ) {
     if has_loaded.0 {
         return;
     }
 
-    let terrain_mesh: Handle<Mesh> = asset_server.load("pentagon.gltf#Mesh0/Primitive0");
+    let terrain_mesh: Handle<Mesh> = asset_server.load("terrain.gltf#Mesh0/Primitive0");
 
     match asset_server.get_load_state(terrain_mesh.id) {
         bevy::asset::LoadState::Failed => {
@@ -163,11 +167,9 @@ fn load_collider(
 
                 for (entity, _) in queries.q1().iter() {
                     let player_rigid = RigidBodyBuilder::new_dynamic()
-                        .mass(1.0, true)
-                        .translation(0., 30., 0.)
-                        .linvel(0.0, 20.0, 0.0);
-                    let player_coll = ColliderBuilder::cuboid(1., 1., 1.);
-
+                        .lock_rotations()
+                        .mass(0.1, true);
+                    let player_coll = ColliderBuilder::cuboid(0.5, 0.5, 0.5);
 
                     commands.insert(entity, (player_rigid, player_coll));
                 }
@@ -198,8 +200,11 @@ fn process_mouse_events(
     let look_sense = 1.0;
     let delta_seconds = time.delta_seconds();
 
+    let tau = 2. * std::f32::consts::PI;
+
     for mut player in &mut query.iter_mut() {
         player.yaw += look.x * delta_seconds * look_sense;
+        player.yaw = (player.yaw + tau) % tau;
         player.camera_pitch -= look.y * delta_seconds * look_sense;
         player.camera_distance -= zoom_delta * delta_seconds * zoom_sense;
     }
@@ -209,14 +214,14 @@ fn update_player(
     time: Res<Time>,
     keyboard_input: Res<Input<KeyCode>>,
     mut queries: QuerySet<(
-        Query<(&mut MMOPlayer, &mut Transform)>,
+        Query<(&mut MMOPlayer, &Transform, &RigidBodyHandleComponent)>,
         Query<&mut Transform>,
     )>,
-    // mut rigidbody_Set: ResMut<RigidBodySet>,
+    mut rigidbody_set: ResMut<RigidBodySet>,
 ) {
     let mut movement = Vec2::zero();
 
-    // let mut jump = keyboard_input.just_pressed(KeyCode::Space);
+    let jump = keyboard_input.just_pressed(KeyCode::Space);
 
     if keyboard_input.pressed(KeyCode::W) { movement.y += 1.; }
     if keyboard_input.pressed(KeyCode::S) { movement.y -= 1.; }
@@ -230,9 +235,9 @@ fn update_player(
     let move_speed = 10.0;
     movement *= time.delta_seconds() * move_speed;
 
-    let mut cam_positions = Vec::new();
+    let mut cam_positions: Vec<(Entity, Vec3)> = Vec::new();
 
-    for (mut player, mut transform) in &mut queries.q0_mut().iter_mut() {
+    for (mut player, transform, rigid_handle) in &mut queries.q0_mut().iter_mut() {
         player.camera_pitch = player
             .camera_pitch
             .max(1f32.to_radians())
@@ -245,14 +250,22 @@ fn update_player(
         let fwd = fwd * movement.y;
         let right = right * movement.x;
 
-        transform.translation += Vec3::from(fwd + right);
-        transform.rotation = Quat::from_rotation_y(-player.yaw);
+        let direction = Vec3::from(fwd + right) * 50.0;
 
-        // if jump {
-        //     rigidbody_Set.get_mut(rigid.handle())
-        //         .unwrap()
-        //         .apply_impulse(Vector3::new(0.0, 5.0, 0.0), true);
-        // }
+        let rigid = rigidbody_set.get_mut(rigid_handle.handle()).unwrap();
+
+        let mut linvel: Vector3<f32> = *rigid.linvel();
+        linvel.x = direction.x;
+        linvel.z = direction.z;
+        rigid.set_linvel(linvel, true);
+
+        let mut position = *rigid.position();
+        position.rotation = UnitQuaternion::new(Vector3::y() * -player.yaw);
+        rigid.set_position(position, false);
+
+        if jump {
+            rigid.apply_impulse(Vector3::new(0.0, 10.0, 0.0), true);
+        }
 
         if let Some(camera_entity) = player.camera_entity {
             let cam_pos = Vec3::new(0., player.camera_pitch.cos(), -player.camera_pitch.sin())
@@ -265,7 +278,7 @@ fn update_player(
     for (camera_entity, cam_pos) in cam_positions.iter() {
         if let Ok(mut cam_trans) = queries
             .q1_mut()
-            .get_component_mut::<Transform>(*camera_entity)
+            .get_mut(*camera_entity)
         {
             cam_trans.translation = *cam_pos;
 
