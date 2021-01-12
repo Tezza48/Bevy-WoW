@@ -3,22 +3,14 @@ use bevy::{
     input::mouse::{MouseMotion, MouseWheel},
     render::mesh::{Indices, VertexAttributeValues},
 };
-use bevy_rapier3d::{
-    rapier::dynamics::{
-        RigidBodyBuilder,
-        RigidBodySet,
-    },
-    rapier::geometry::ColliderBuilder,
-    na::{
+use bevy_rapier3d::{na::{
         Point3,
         Vector3,
         UnitQuaternion,
-    },
-    physics::{
-        RapierPhysicsPlugin,
-        RigidBodyHandleComponent,
-    },
-};
+    }, physics::{EventQueue, RapierPhysicsPlugin, RigidBodyHandleComponent}, rapier::dynamics::{
+        RigidBodyBuilder,
+        RigidBodySet,
+    }, rapier::geometry::ColliderBuilder};
 
 struct MMOPlayer {
     yaw: f32,
@@ -26,6 +18,8 @@ struct MMOPlayer {
     camera_distance: f32,
     camera_pitch: f32,
     camera_entity: Option<Entity>,
+
+    grounded: bool,
 }
 
 impl Default for MMOPlayer {
@@ -36,6 +30,7 @@ impl Default for MMOPlayer {
             camera_distance: 20.,
             camera_pitch: 30.0f32.to_radians(),
             camera_entity: None,
+            grounded: true,
         }
     }
 }
@@ -61,7 +56,48 @@ fn main() {
         .add_system(update_player.system())
         .add_resource(HasLoadedCollider(false))
         .add_system(load_collider.system())
+        .add_system(physics_events.system())
         .run();
+}
+
+
+fn physics_events(events: Res<EventQueue>, mut query: Query<&mut MMOPlayer>, rigid_set: ResMut<RigidBodySet>) {
+    // while let Ok(proximity_event) = events.proximity_events.pop() {
+    // }
+
+    while let Ok(contact_event) = events.contact_events.pop() {
+        // TODO WT: Simplify
+        match contact_event {
+            bevy_rapier3d::rapier::ncollide::narrow_phase::ContactEvent::Started(handle1, handle2) => {
+                if let Some(rigid) = rigid_set.get(handle1) {
+                    let entity = Entity::from_bits(rigid.user_data as u64);
+                    if let Ok(mut mmo) = query.get_mut(entity) {
+                        mmo.grounded = true;
+                    }
+                }
+                if let Some(rigid) = rigid_set.get(handle2) {
+                    let entity = Entity::from_bits(rigid.user_data as u64);
+                    if let Ok(mut mmo) = query.get_mut(entity) {
+                        mmo.grounded = true;
+                    }
+                }
+            }
+            bevy_rapier3d::rapier::ncollide::narrow_phase::ContactEvent::Stopped(handle1, handle2) => {
+                if let Some(rigid) = rigid_set.get(handle1) {
+                    let entity = Entity::from_bits(rigid.user_data as u64);
+                    if let Ok(mut mmo) = query.get_mut(entity) {
+                        mmo.grounded = false;
+                    }
+                }
+                if let Some(rigid) = rigid_set.get(handle2) {
+                    let entity = Entity::from_bits(rigid.user_data as u64);
+                    if let Ok(mut mmo) = query.get_mut(entity) {
+                        mmo.grounded = false;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn setup(
@@ -76,7 +112,7 @@ fn setup(
         cube_material
     });
 
-    let terrain_scene = asset_server.load("terrain.gltf");
+    let terrain_scene = asset_server.load("character_controller_playground.gltf");
 
     // Create the environment.
     commands
@@ -126,8 +162,9 @@ fn load_collider(
         return;
     }
 
-    let terrain_mesh: Handle<Mesh> = asset_server.load("terrain.gltf#Mesh0/Primitive0");
+    let terrain_mesh: Handle<Mesh> = asset_server.load("character_controller_playground.gltf#Mesh0/Primitive0");
 
+    // TODO WT: Clean up, more generic.
     match asset_server.get_load_state(terrain_mesh.id) {
         bevy::asset::LoadState::Failed => {
             println!("Failed to Load!");
@@ -141,34 +178,19 @@ fn load_collider(
         bevy::asset::LoadState::Loaded => {
             println!("Loaded");
             if let Some(mesh) = meshes.get(&terrain_mesh) {
-                let verts = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
-
-                let verts: &Vec<[f32; 3]> = match verts {
-                    VertexAttributeValues::Float3(vert) => Some(vert),
-                    _ => None
-                }.unwrap();
-                let verts: Vec<Point3<f32>> = verts.iter().map(|vert| {
-                    Point3::new(vert[0], vert[1], vert[2])
-                }).collect();
-
-                let indices: Vec<Point3<u32>> = match mesh.indices().unwrap() {
-                    Indices::U32(i) => Some(i),
-                    _ => None,
-                }.unwrap().chunks(3).map(|tri| {
-                    Point3::new(tri[0], tri[1], tri[2])
-                }).collect();
+                let collider = create_collider_for_mesh(mesh);
 
                 for (entity, _) in queries.q0().iter() {
-                    let ground_rigid = RigidBodyBuilder::new_static();
-                    let ground_collider = ColliderBuilder::trimesh(verts.clone(), indices.clone());
+                    let ground_rigid = RigidBodyBuilder::new_static().user_data(entity.to_bits() as u128);
 
-                    commands.insert(entity, (ground_rigid, ground_collider));
+                    commands.insert(entity, (ground_rigid, collider.clone()));
                 }
 
                 for (entity, _) in queries.q1().iter() {
                     let player_rigid = RigidBodyBuilder::new_dynamic()
                         .lock_rotations()
-                        .mass(0.1, true);
+                        .mass(0.1, true)
+                        .user_data(entity.to_bits() as u128);
                     let player_coll = ColliderBuilder::cuboid(0.5, 0.5, 0.5);
 
                     commands.insert(entity, (player_rigid, player_coll));
@@ -177,6 +199,27 @@ fn load_collider(
             has_loaded.0 = true;
         }
     }
+}
+
+fn create_collider_for_mesh(mesh: &Mesh) -> ColliderBuilder {
+    let verts = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+
+    let verts: &Vec<[f32; 3]> = match verts {
+        VertexAttributeValues::Float3(vert) => Some(vert),
+        _ => None
+    }.unwrap();
+    let verts: Vec<Point3<f32>> = verts.iter().map(|vert| {
+        Point3::new(vert[0], vert[1], vert[2])
+    }).collect();
+
+    let indices: Vec<Point3<u32>> = match mesh.indices().unwrap() {
+        Indices::U32(i) => Some(i),
+        _ => None,
+    }.unwrap().chunks(3).map(|tri| {
+        Point3::new(tri[0], tri[1], tri[2])
+    }).collect();
+
+    ColliderBuilder::trimesh(verts.clone(), indices.clone())
 }
 
 fn process_mouse_events(
@@ -228,11 +271,7 @@ fn update_player(
     if keyboard_input.pressed(KeyCode::D) { movement.x += 1.; }
     if keyboard_input.pressed(KeyCode::A) { movement.x -= 1.; }
 
-    if movement != Vec2::zero() {
-        movement.normalize();
-    }
-
-    let move_speed = 10.0;
+    let move_speed = 500.0;
     movement *= time.delta_seconds() * move_speed;
 
     let mut cam_positions: Vec<(Entity, Vec3)> = Vec::new();
@@ -244,28 +283,35 @@ fn update_player(
             .min(179f32.to_radians());
         player.camera_distance = player.camera_distance.max(5.).min(30.);
 
-        let fwd = transform.forward();
-        let right = Vec3::cross(fwd, Vec3::unit_y());
+        let fwd = transform.forward().normalize();
+        let right = Vec3::cross(fwd, Vec3::unit_y()).normalize();
 
         let fwd = fwd * movement.y;
         let right = right * movement.x;
 
-        let direction = Vec3::from(fwd + right) * 50.0;
+        let direction = Vec3::from(fwd + right);
+        // if direction.length_squared() > 0 {
+        //     direction.normalize();
+        // }
 
         let rigid = rigidbody_set.get_mut(rigid_handle.handle()).unwrap();
 
-        let mut linvel: Vector3<f32> = *rigid.linvel();
-        linvel.x = direction.x;
-        linvel.z = direction.z;
-        rigid.set_linvel(linvel, true);
+        // if !player.grounded { direction /= 2.; }
+
+        if player.grounded {
+            let mut linvel: Vector3<f32> = *rigid.linvel();
+            linvel.x = direction.x;
+            linvel.z = direction.z;
+            rigid.set_linvel(linvel, true);
+
+            if  jump {
+                rigid.apply_impulse(Vector3::new(0.0, 10.0, 0.0), true);
+            }
+        }
 
         let mut position = *rigid.position();
         position.rotation = UnitQuaternion::new(Vector3::y() * -player.yaw);
         rigid.set_position(position, false);
-
-        if jump {
-            rigid.apply_impulse(Vector3::new(0.0, 10.0, 0.0), true);
-        }
 
         if let Some(camera_entity) = player.camera_entity {
             let cam_pos = Vec3::new(0., player.camera_pitch.cos(), -player.camera_pitch.sin())
