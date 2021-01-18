@@ -11,25 +11,24 @@ use bevy::{
     render::mesh::{
         Indices,
         VertexAttributeValues
-    },
-    scene::InstanceId
+    }
 };
-use bevy_rapier3d::{
-    physics::*,
-    na::{
-        Point3,
-        Vector3,
-        UnitQuaternion,
-    },
-    rapier::dynamics::{
+use bevy_rapier3d::{na::{Isometry3, Point3, UnitQuaternion, Vector3}, physics::*, rapier::dynamics::{
         RigidBodyBuilder,
         RigidBodySet,
-    },
-    rapier::geometry::ColliderBuilder
-};
+    }, rapier::{
+        geometry::*,
+        pipeline::QueryPipeline
+    }};
 
 use resource::*;
 use component::*;
+
+struct InteractionFlags;
+impl InteractionFlags {
+    const PLAYER: u16 = 0b1;
+    const WALKABLE: u16 = 0b10;
+}
 
 fn main() {
     App::build()
@@ -37,52 +36,58 @@ fn main() {
         .init_resource::<resource::MouseState>()
         .add_plugins(DefaultPlugins)
         .add_plugin(RapierPhysicsPlugin)
-        .add_startup_system(setup::setup.system())
+        .add_startup_system(setup.system())
         .add_system(process_mouse_events.system())
         .add_system(update_player.system())
         .add_system(load_collider.system())
-        .add_system(physics_events.system())
+        // .add_system(physics_events.system())
         .add_resource(SceneInstance::default())
         .run();
 }
 
-fn physics_events(events: Res<EventQueue>, mut query: Query<&mut MMOPlayer>, rigid_set: ResMut<RigidBodySet>) {
-    // while let Ok(proximity_event) = events.proximity_events.pop() {
-    // }
+pub fn setup(
+    commands: &mut Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+    mut scene_spawner: ResMut<SceneSpawner>,
+    mut scene_instance: ResMut<SceneInstance>,
+) {
+    let cube_mat_handle = materials.add({
+        let mut cube_material: StandardMaterial = Color::rgb(1.0, 1.0, 1.0).into();
+        cube_material.shaded = true;
+        cube_material
+    });
 
-    while let Ok(contact_event) = events.contact_events.pop() {
-        // TODO WT: Simplify
-        match contact_event {
-            bevy_rapier3d::rapier::ncollide::narrow_phase::ContactEvent::Started(handle1, handle2) => {
-                if let Some(rigid) = rigid_set.get(handle1) {
-                    let entity = Entity::from_bits(rigid.user_data as u64);
-                    if let Ok(mut mmo) = query.get_mut(entity) {
-                        mmo.grounded = true;
-                    }
-                }
-                if let Some(rigid) = rigid_set.get(handle2) {
-                    let entity = Entity::from_bits(rigid.user_data as u64);
-                    if let Ok(mut mmo) = query.get_mut(entity) {
-                        mmo.grounded = true;
-                    }
-                }
-            }
-            bevy_rapier3d::rapier::ncollide::narrow_phase::ContactEvent::Stopped(handle1, handle2) => {
-                if let Some(rigid) = rigid_set.get(handle1) {
-                    let entity = Entity::from_bits(rigid.user_data as u64);
-                    if let Ok(mut mmo) = query.get_mut(entity) {
-                        mmo.grounded = false;
-                    }
-                }
-                if let Some(rigid) = rigid_set.get(handle2) {
-                    let entity = Entity::from_bits(rigid.user_data as u64);
-                    if let Ok(mut mmo) = query.get_mut(entity) {
-                        mmo.grounded = false;
-                    }
-                }
-            }
-        }
-    }
+    let terrain_handle = asset_server.load("character_controller_playground.gltf");
+
+    let instance_id = scene_spawner.spawn(terrain_handle.clone());
+    scene_instance.0 = Some(instance_id);
+
+    // Spawn camera and player, set entity for camera on player.
+    let camera_entity = commands.spawn(Camera3dBundle::default()).current_entity();
+
+    let player_entity = commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+            material: cube_mat_handle.clone(),
+            transform: Transform::from_translation(Vec3::new(0.0, 0.5, 0.0)),
+            ..Default::default()
+        })
+        .with(MMOPlayer {
+            camera_entity,
+            camera_distance: 20.,
+            ..Default::default()
+        })
+        .current_entity();
+
+    // Append camera to player as child.
+    commands.push_children(player_entity.unwrap(), &[camera_entity.unwrap()]);
+
+    commands.spawn(LightBundle {
+        transform: Transform::from_translation(Vec3::new(4.0, 5.0, 4.0)),
+        ..Default::default()
+    });
 }
 
 // System polls whether pentagon mesh is loaded, then initialises physics components for it and the player.
@@ -91,122 +96,54 @@ fn load_collider(
     meshes: ResMut<Assets<Mesh>>,
     scene_spawner: ResMut<SceneSpawner>,
     scene_instance: Res<SceneInstance>,
-    asset_server: Res<AssetServer>,
-    // queries: QuerySet<(
-    //     // Query<(&NeedsCollider)>,
-    //     // Query<(Entity, &MMOPlayer), Without<ColliderHandleComponent>>,
-    //     Query<&Handle<Mesh>>,
-    // )>,
-    mesh_query: Query<&Handle<Mesh>>,
-    // commands: &mut Commands,
-    mut local_state: Local<(bool, bool)>,
+    queries: QuerySet<(
+        Query<&Handle<Mesh>>,
+        Query<(Entity, &MMOPlayer), Without<RigidBodyHandleComponent>>,
+    )>,
+    commands: &mut Commands,
+    mut done: Local<bool>,
 ) {
-    if local_state.1 && !local_state.0 {
-        println!("Not done");
-
-        if let Some(instance_id) = scene_instance.0 {
-            println!("Instance Id is set: {:?}", instance_id);
-
-            let ready = scene_spawner.instance_is_ready(instance_id);
-            if ready {
-                println!("Scene is ready");
-            }
-
-            if let Some(entity_iter) = scene_spawner.iter_instance_entities(instance_id) {
-                println!("got an entity iterator");
-
-                local_state.0 = true;
-
-                entity_iter.for_each(|entity| {
-                    println!("Iterating entity {:?}", entity);
-
-                    if let Ok(mesh_handle) = mesh_query.get(entity) {
-                        println!("Mesh was on this entity");
-
-                        if let Some(mesh) = meshes.get(mesh_handle) {
-                            println!("Actually got here");
-                        }
-                    }
-                });
-            } else {
-                println!("For some reason it's not getting the iterator.");
-            }
-        }
-    }
-
-    if local_state.0 {
+    if *done {
         return;
     }
 
-    let terrain_handle: Handle<Scene> = asset_server.get_handle("terrain.gltf");
-    match asset_server.get_load_state(terrain_handle) {
-        bevy::asset::LoadState::NotLoaded => { println!("NotLoaded"); local_state.1 = false; }
-        bevy::asset::LoadState::Loading => { println!("Loading"); }
-        bevy::asset::LoadState::Loaded => { println!("Loaded"); local_state.1 = true; }
-        bevy::asset::LoadState::Failed => { println!("Failed"); }
+    if let Some(instance_id) = scene_instance.0 {
+        if let Some(entity_iter) = scene_spawner.iter_instance_entities(instance_id) {
+            entity_iter.for_each(|entity| {
+                if let Ok(mesh_handle) = queries.q0().get(entity) {
+                    if let Some(mesh) = meshes.get(mesh_handle) {
+                        let groups = InteractionGroups::all().with_groups(InteractionFlags::WALKABLE);
+                        let collider = create_collider_for_mesh(mesh)
+                            .collision_groups(groups);
+                        
+                        let rigid = RigidBodyBuilder::new_static();
+
+                        commands.insert(entity, (collider, rigid));
+                    }
+                }
+
+                *done = true;
+            });
+        }
     }
 
-    // for needs in queries.q0().iter() {
-    //     if let Some(entity_iter) = scene_spawner.iter_instance_entities(needs.0) {
-    //         entity_iter.for_each(|entity| {
-    //             if let Ok(mesh_handle) = queries.q2().get(entity) {
-    //                 let load_state = asset_server.get_load_state(mesh_handle);
-    //
-    //                 match load_state {
-    //                     asset::LoadState::Loaded => {
-    //                         if let Some(mesh) = meshes.get(mesh_handle) {
-    //                             let collider = create_collider_for_mesh(mesh);
-    //                             let rigid = RigidBodyBuilder::new_static();
-    //
-    //                             println!("Making collider for mesh {:?}", entity);
-    //
-    //                             commands.insert(entity, (collider, rigid));
-    //                             commands.remove_one::<component::NeedsCollider>(entity);
-    //                         }
-    //                     }
-    //                     _ => (),
-    //                 }
-    //             }
-    //         });
-    //     } else { println!("Not finished yet"); }
-    // }
-    //
-    // let mut all_colliders_done = true;
-    // for (needs_collider) in queries.q0().iter() {
-    //
-    //     let load_state = asset_server.get_load_state(needs_collider.0.id);
-    //
-    //     match load_state {
-    //         asset::LoadState::Loaded => {
-    //             if let Some(mesh) = meshes.get(&needs_collider.0) {
-    //                 let collider = create_collider_for_mesh(mesh);
-    //                 let rigid = RigidBodyBuilder::new_static();
-    //
-    //                 println!("Making collider for mesh {:?}", entity);
-    //
-    //                 commands.insert(entity, (collider, rigid));
-    //                 commands.remove_one::<component::NeedsCollider>(entity);
-    //             }
-    //         }
-    //         _ => all_colliders_done = false,
-    //     }
-    // }
-    //
-    // if all_colliders_done {
-    //     for (entity, _) in queries.q1().iter() {
-    //         let player_rigid = RigidBodyBuilder::new_dynamic()
-    //             .lock_rotations()
-    //             .mass(0.1, true)
-    //             .user_data(entity.to_bits() as u128);
-    //         let player_coll = ColliderBuilder::cuboid(0.5, 0.5, 0.5);
-    //         // let player_coll = ColliderBuilder::capsule_y(0.5, 0.2);
-    //
-    //         commands.insert(entity, (player_rigid, player_coll));
-    //     }
-    // }
+    if *done {
+        for (entity, _) in queries.q1().iter() {
+            let player_rigid = RigidBodyBuilder::new_dynamic()
+                .lock_rotations()
+                .linvel(10.0, 10.0, 0.0)
+                .mass(1., false)
+                .user_data(entity.to_bits() as u128);
+            
+            let player_collider = ColliderBuilder::capsule_y(0.25, 0.25)
+                .collision_groups(InteractionGroups::all().with_groups(InteractionFlags::PLAYER));
+
+            commands.insert(entity, (player_rigid, player_collider));
+        }
+    }
 }
 
-fn _create_collider_for_mesh(mesh: &Mesh) -> ColliderBuilder {
+fn create_collider_for_mesh(mesh: &Mesh) -> ColliderBuilder {
     let verts = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
 
     let verts: &Vec<[f32; 3]> = match verts {
@@ -261,8 +198,10 @@ fn process_mouse_events(
 fn update_player(
     time: Res<Time>,
     keyboard_input: Res<Input<KeyCode>>,
+    query_pipeline: Res<QueryPipeline>,
+    colliders: Res<ColliderSet>,
     mut queries: QuerySet<(
-        Query<(&mut MMOPlayer, &Transform, &RigidBodyHandleComponent)>,
+        Query<(&mut MMOPlayer, &Transform, &RigidBodyHandleComponent, &ColliderHandleComponent)>,
         Query<&mut Transform>,
     )>,
     mut rigidbody_set: ResMut<RigidBodySet>,
@@ -281,7 +220,7 @@ fn update_player(
 
     let mut cam_positions: Vec<(Entity, Vec3)> = Vec::new();
 
-    for (mut player, transform, rigid_handle) in &mut queries.q0_mut().iter_mut() {
+    for (mut player, transform, rigid_handle, collider) in &mut queries.q0_mut().iter_mut() {
         player.camera_pitch = player
             .camera_pitch
             .max(1f32.to_radians())
@@ -300,6 +239,15 @@ fn update_player(
         // }
 
         let rigid = rigidbody_set.get_mut(rigid_handle.handle()).unwrap();
+
+        let origin = Point3::new(transform.translation.x, transform.translation.y, transform.translation.z);
+        let ray = Ray::new(origin, Vector3::new(0.0, -1.0, 0.0));
+
+        if let Some(interaction) = query_pipeline.cast_ray(&colliders, &ray, 0.7, InteractionGroups::all().with_mask(!InteractionFlags::PLAYER)) {
+            player.grounded = true;
+        } else {
+            player.grounded = false;
+        }
 
         // if !player.grounded { direction /= 2.; }
 
@@ -320,17 +268,14 @@ fn update_player(
 
         if let Some(camera_entity) = player.camera_entity {
             let cam_pos = Vec3::new(0., player.camera_pitch.cos(), -player.camera_pitch.sin())
-                .normalize()
-                * player.camera_distance;
+            .normalize()
+            * player.camera_distance;
             cam_positions.push((camera_entity, cam_pos));
         }
     }
 
     for (camera_entity, cam_pos) in cam_positions.iter() {
-        if let Ok(mut cam_trans) = queries
-            .q1_mut()
-            .get_mut(*camera_entity)
-        {
+        if let Ok(mut cam_trans) = queries.q1_mut().get_mut(*camera_entity) {
             cam_trans.translation = *cam_pos;
 
             let look = Mat4::face_toward(

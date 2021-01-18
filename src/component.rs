@@ -1,7 +1,6 @@
 use bevy::{prelude::*, scene::InstanceId};
 
-pub struct _NeedsCollider(pub InstanceId);
-
+#[derive(Debug)]
 pub struct MMOPlayer {
     pub yaw: f32,
 
