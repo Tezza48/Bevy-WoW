@@ -1,65 +1,50 @@
+mod setup;
+mod component;
+mod resource;
+
 use bevy::{
     prelude::*,
-    input::mouse::{MouseMotion, MouseWheel},
-    render::mesh::{Indices, VertexAttributeValues},
+    input::mouse::{
+        MouseMotion,
+        MouseWheel
+    },
+    render::mesh::{
+        Indices,
+        VertexAttributeValues
+    },
+    scene::InstanceId
 };
-use bevy_rapier3d::{na::{
+use bevy_rapier3d::{
+    physics::*,
+    na::{
         Point3,
         Vector3,
         UnitQuaternion,
-    }, physics::{EventQueue, RapierPhysicsPlugin, RigidBodyHandleComponent}, rapier::dynamics::{
+    },
+    rapier::dynamics::{
         RigidBodyBuilder,
         RigidBodySet,
-    }, rapier::geometry::ColliderBuilder};
+    },
+    rapier::geometry::ColliderBuilder
+};
 
-struct MMOPlayer {
-    yaw: f32,
-
-    camera_distance: f32,
-    camera_pitch: f32,
-    camera_entity: Option<Entity>,
-
-    grounded: bool,
-}
-
-impl Default for MMOPlayer {
-    fn default() -> Self {
-        MMOPlayer {
-            yaw: 0.,
-
-            camera_distance: 20.,
-            camera_pitch: 30.0f32.to_radians(),
-            camera_entity: None,
-            grounded: true,
-        }
-    }
-}
-
-#[derive(Default)]
-struct MouseState {
-    mouse_motion_event_reader: EventReader<MouseMotion>,
-    mouse_wheel_event_reader: EventReader<MouseWheel>,
-}
-
-struct HasLoadedCollider(bool);
-
-struct Terrain;
+use resource::*;
+use component::*;
 
 fn main() {
     App::build()
         .add_resource(Msaa { samples: 4 })
-        .init_resource::<MouseState>()
+        .init_resource::<resource::MouseState>()
         .add_plugins(DefaultPlugins)
         .add_plugin(RapierPhysicsPlugin)
-        .add_startup_system(setup.system())
+        .add_startup_system(setup::setup.system())
         .add_system(process_mouse_events.system())
         .add_system(update_player.system())
-        .add_resource(HasLoadedCollider(false))
         .add_system(load_collider.system())
         .add_system(physics_events.system())
+        .add_resource(SceneInstance::default())
         .run();
 }
-
 
 fn physics_events(events: Res<EventQueue>, mut query: Query<&mut MMOPlayer>, rigid_set: ResMut<RigidBodySet>) {
     // while let Ok(proximity_event) = events.proximity_events.pop() {
@@ -100,108 +85,128 @@ fn physics_events(events: Res<EventQueue>, mut query: Query<&mut MMOPlayer>, rig
     }
 }
 
-fn setup(
-    commands: &mut Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
-) {
-    let cube_mat_handle = materials.add({
-        let mut cube_material: StandardMaterial = Color::rgb(1.0, 1.0, 1.0).into();
-        cube_material.shaded = true;
-        cube_material
-    });
-
-    let terrain_scene = asset_server.load("character_controller_playground.gltf");
-
-    // Create the environment.
-    commands
-        .spawn(())
-        .spawn_scene(terrain_scene)
-        .with(Terrain);
-
-    // Spawn camera and player, set entity for camera on player.
-    let camera_entity = commands.spawn(Camera3dBundle::default()).current_entity();
-
-    let player_entity = commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-            material: cube_mat_handle.clone(),
-            ..Default::default()
-        })
-        .with(MMOPlayer {
-            camera_entity,
-            camera_distance: 20.,
-            ..Default::default()
-        })
-        .current_entity();
-
-    // Append camera to player as child.
-    commands.push_children(player_entity.unwrap(), &[camera_entity.unwrap()]);
-
-
-        // .with(ground_collider.unwrap())
-    commands.spawn(LightBundle {
-        transform: Transform::from_translation(Vec3::new(4.0, 5.0, 4.0)),
-        ..Default::default()
-    });
-}
-
 // System polls whether pentagon mesh is loaded, then initialises physics components for it and the player.
+// TODO WT: Run criteria for this system.
 fn load_collider(
     meshes: ResMut<Assets<Mesh>>,
+    scene_spawner: ResMut<SceneSpawner>,
+    scene_instance: Res<SceneInstance>,
     asset_server: Res<AssetServer>,
-    mut has_loaded: ResMut<HasLoadedCollider>,
-    queries: QuerySet<(
-        Query<(Entity, &Terrain)>,
-        Query<(Entity, &MMOPlayer)>
-    )>,
-    commands: &mut Commands
+    // queries: QuerySet<(
+    //     // Query<(&NeedsCollider)>,
+    //     // Query<(Entity, &MMOPlayer), Without<ColliderHandleComponent>>,
+    //     Query<&Handle<Mesh>>,
+    // )>,
+    mesh_query: Query<&Handle<Mesh>>,
+    // commands: &mut Commands,
+    mut local_state: Local<(bool, bool)>,
 ) {
-    if has_loaded.0 {
+    if local_state.1 && !local_state.0 {
+        println!("Not done");
+
+        if let Some(instance_id) = scene_instance.0 {
+            println!("Instance Id is set: {:?}", instance_id);
+
+            let ready = scene_spawner.instance_is_ready(instance_id);
+            if ready {
+                println!("Scene is ready");
+            }
+
+            if let Some(entity_iter) = scene_spawner.iter_instance_entities(instance_id) {
+                println!("got an entity iterator");
+
+                local_state.0 = true;
+
+                entity_iter.for_each(|entity| {
+                    println!("Iterating entity {:?}", entity);
+
+                    if let Ok(mesh_handle) = mesh_query.get(entity) {
+                        println!("Mesh was on this entity");
+
+                        if let Some(mesh) = meshes.get(mesh_handle) {
+                            println!("Actually got here");
+                        }
+                    }
+                });
+            } else {
+                println!("For some reason it's not getting the iterator.");
+            }
+        }
+    }
+
+    if local_state.0 {
         return;
     }
 
-    let terrain_mesh: Handle<Mesh> = asset_server.load("character_controller_playground.gltf#Mesh0/Primitive0");
-
-    // TODO WT: Clean up, more generic.
-    match asset_server.get_load_state(terrain_mesh.id) {
-        bevy::asset::LoadState::Failed => {
-            println!("Failed to Load!");
-        },
-        bevy::asset::LoadState::Loading => {
-            println!("Loading!");
-        },
-        bevy::asset::LoadState::NotLoaded => {
-            println!("Not Loaded");
-        },
-        bevy::asset::LoadState::Loaded => {
-            println!("Loaded");
-            if let Some(mesh) = meshes.get(&terrain_mesh) {
-                let collider = create_collider_for_mesh(mesh);
-
-                for (entity, _) in queries.q0().iter() {
-                    let ground_rigid = RigidBodyBuilder::new_static().user_data(entity.to_bits() as u128);
-
-                    commands.insert(entity, (ground_rigid, collider.clone()));
-                }
-
-                for (entity, _) in queries.q1().iter() {
-                    let player_rigid = RigidBodyBuilder::new_dynamic()
-                        .lock_rotations()
-                        .mass(0.1, true)
-                        .user_data(entity.to_bits() as u128);
-                    let player_coll = ColliderBuilder::cuboid(0.5, 0.5, 0.5);
-
-                    commands.insert(entity, (player_rigid, player_coll));
-                }
-            } else { println!("No mesh was there") }
-            has_loaded.0 = true;
-        }
+    let terrain_handle: Handle<Scene> = asset_server.get_handle("terrain.gltf");
+    match asset_server.get_load_state(terrain_handle) {
+        bevy::asset::LoadState::NotLoaded => { println!("NotLoaded"); local_state.1 = false; }
+        bevy::asset::LoadState::Loading => { println!("Loading"); }
+        bevy::asset::LoadState::Loaded => { println!("Loaded"); local_state.1 = true; }
+        bevy::asset::LoadState::Failed => { println!("Failed"); }
     }
+
+    // for needs in queries.q0().iter() {
+    //     if let Some(entity_iter) = scene_spawner.iter_instance_entities(needs.0) {
+    //         entity_iter.for_each(|entity| {
+    //             if let Ok(mesh_handle) = queries.q2().get(entity) {
+    //                 let load_state = asset_server.get_load_state(mesh_handle);
+    //
+    //                 match load_state {
+    //                     asset::LoadState::Loaded => {
+    //                         if let Some(mesh) = meshes.get(mesh_handle) {
+    //                             let collider = create_collider_for_mesh(mesh);
+    //                             let rigid = RigidBodyBuilder::new_static();
+    //
+    //                             println!("Making collider for mesh {:?}", entity);
+    //
+    //                             commands.insert(entity, (collider, rigid));
+    //                             commands.remove_one::<component::NeedsCollider>(entity);
+    //                         }
+    //                     }
+    //                     _ => (),
+    //                 }
+    //             }
+    //         });
+    //     } else { println!("Not finished yet"); }
+    // }
+    //
+    // let mut all_colliders_done = true;
+    // for (needs_collider) in queries.q0().iter() {
+    //
+    //     let load_state = asset_server.get_load_state(needs_collider.0.id);
+    //
+    //     match load_state {
+    //         asset::LoadState::Loaded => {
+    //             if let Some(mesh) = meshes.get(&needs_collider.0) {
+    //                 let collider = create_collider_for_mesh(mesh);
+    //                 let rigid = RigidBodyBuilder::new_static();
+    //
+    //                 println!("Making collider for mesh {:?}", entity);
+    //
+    //                 commands.insert(entity, (collider, rigid));
+    //                 commands.remove_one::<component::NeedsCollider>(entity);
+    //             }
+    //         }
+    //         _ => all_colliders_done = false,
+    //     }
+    // }
+    //
+    // if all_colliders_done {
+    //     for (entity, _) in queries.q1().iter() {
+    //         let player_rigid = RigidBodyBuilder::new_dynamic()
+    //             .lock_rotations()
+    //             .mass(0.1, true)
+    //             .user_data(entity.to_bits() as u128);
+    //         let player_coll = ColliderBuilder::cuboid(0.5, 0.5, 0.5);
+    //         // let player_coll = ColliderBuilder::capsule_y(0.5, 0.2);
+    //
+    //         commands.insert(entity, (player_rigid, player_coll));
+    //     }
+    // }
 }
 
-fn create_collider_for_mesh(mesh: &Mesh) -> ColliderBuilder {
+fn _create_collider_for_mesh(mesh: &Mesh) -> ColliderBuilder {
     let verts = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
 
     let verts: &Vec<[f32; 3]> = match verts {
@@ -224,7 +229,7 @@ fn create_collider_for_mesh(mesh: &Mesh) -> ColliderBuilder {
 
 fn process_mouse_events(
     time: Res<Time>,
-    mut state: ResMut<MouseState>,
+    mut state: ResMut<resource::MouseState>,
     motion_events: Res<Events<MouseMotion>>,
     wheel_events: Res<Events<MouseWheel>>,
     mut query: Query<&mut MMOPlayer>,
