@@ -13,21 +13,17 @@ use bevy::{
         VertexAttributeValues
     }
 };
-use bevy_rapier3d::{na::{Isometry3, Point3, UnitQuaternion, Vector3}, physics::*, rapier::dynamics::{
+use bevy_rapier3d::{na::{Point3, UnitQuaternion, Vector3}, physics::*, rapier::dynamics::{
         RigidBodyBuilder,
         RigidBodySet,
-    }, rapier::{
-        geometry::*,
-        pipeline::QueryPipeline
-    }};
+    }, rapier::{geometry::*, pipeline::QueryPipeline}};
 
 use resource::*;
 use component::*;
 
-struct InteractionFlags;
-impl InteractionFlags {
-    const PLAYER: u16 = 0b1;
-    const WALKABLE: u16 = 0b10;
+mod InteractionFlags {
+    pub const PLAYER: u16 = 0b1;
+    pub const WALKABLE: u16 = 0b10;
 }
 
 fn main() {
@@ -40,7 +36,6 @@ fn main() {
         .add_system(process_mouse_events.system())
         .add_system(update_player.system())
         .add_system(load_collider.system())
-        // .add_system(physics_events.system())
         .add_resource(SceneInstance::default())
         .run();
 }
@@ -53,12 +48,6 @@ pub fn setup(
     mut scene_spawner: ResMut<SceneSpawner>,
     mut scene_instance: ResMut<SceneInstance>,
 ) {
-    let cube_mat_handle = materials.add({
-        let mut cube_material: StandardMaterial = Color::rgb(1.0, 1.0, 1.0).into();
-        cube_material.shaded = true;
-        cube_material
-    });
-
     let terrain_handle = asset_server.load("character_controller_playground.gltf");
 
     let instance_id = scene_spawner.spawn(terrain_handle.clone());
@@ -67,11 +56,16 @@ pub fn setup(
     // Spawn camera and player, set entity for camera on player.
     let camera_entity = commands.spawn(Camera3dBundle::default()).current_entity();
 
+    let cube_mat_handle = materials.add({
+        let mut cube_material: StandardMaterial = Color::rgb(1.0, 1.0, 1.0).into();
+        cube_material.shaded = true;
+        cube_material
+    });
+
     let player_entity = commands
         .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+            mesh: meshes.add(Mesh::from(shape::Cube { size: 0.2 })),
             material: cube_mat_handle.clone(),
-            transform: Transform::from_translation(Vec3::new(0.0, 0.5, 0.0)),
             ..Default::default()
         })
         .with(MMOPlayer {
@@ -79,10 +73,20 @@ pub fn setup(
             camera_distance: 20.,
             ..Default::default()
         })
-        .current_entity();
+        .with(RigidBodyBuilder::new_dynamic()
+            .lock_rotations()
+            .mass(1., false)
+            .sleeping(true)
+        )
+        .with(ColliderBuilder::capsule_y(0.25, 0.25)
+            .translation(0.0, 0.5, 0.0)
+            .collision_groups(InteractionGroups::all().with_groups(InteractionFlags::PLAYER)))
+        .current_entity().unwrap();
+
+    scene_spawner.spawn_as_child(asset_server.load("Animated Characters 2/characterMedium.gltf"), player_entity);
 
     // Append camera to player as child.
-    commands.push_children(player_entity.unwrap(), &[camera_entity.unwrap()]);
+    commands.push_children(player_entity, &[camera_entity.unwrap()]);
 
     commands.spawn(LightBundle {
         transform: Transform::from_translation(Vec3::new(4.0, 5.0, 4.0)),
@@ -96,10 +100,11 @@ fn load_collider(
     meshes: ResMut<Assets<Mesh>>,
     scene_spawner: ResMut<SceneSpawner>,
     scene_instance: Res<SceneInstance>,
-    queries: QuerySet<(
+    mut queries: QuerySet<(
         Query<&Handle<Mesh>>,
-        Query<(Entity, &MMOPlayer), Without<RigidBodyHandleComponent>>,
+        Query<&RigidBodyHandleComponent, With<MMOPlayer>>,
     )>,
+    mut rigidbodies: ResMut<RigidBodySet>,
     commands: &mut Commands,
     mut done: Local<bool>,
 ) {
@@ -115,7 +120,7 @@ fn load_collider(
                         let groups = InteractionGroups::all().with_groups(InteractionFlags::WALKABLE);
                         let collider = create_collider_for_mesh(mesh)
                             .collision_groups(groups);
-                        
+
                         let rigid = RigidBodyBuilder::new_static();
 
                         commands.insert(entity, (collider, rigid));
@@ -128,17 +133,12 @@ fn load_collider(
     }
 
     if *done {
-        for (entity, _) in queries.q1().iter() {
-            let player_rigid = RigidBodyBuilder::new_dynamic()
-                .lock_rotations()
-                .linvel(10.0, 10.0, 0.0)
-                .mass(1., false)
-                .user_data(entity.to_bits() as u128);
-            
-            let player_collider = ColliderBuilder::capsule_y(0.25, 0.25)
-                .collision_groups(InteractionGroups::all().with_groups(InteractionFlags::PLAYER));
-
-            commands.insert(entity, (player_rigid, player_collider));
+        for rigid_handle in queries.q1_mut().iter_mut() {
+            if let Some(rigid) = rigidbodies.get_mut(rigid_handle.handle()) {
+                let mut pos = *rigid.position();
+                pos.translation.y = 10.0;
+                rigid.set_position(pos, true);
+            }
         }
     }
 }
@@ -201,7 +201,7 @@ fn update_player(
     query_pipeline: Res<QueryPipeline>,
     colliders: Res<ColliderSet>,
     mut queries: QuerySet<(
-        Query<(&mut MMOPlayer, &Transform, &RigidBodyHandleComponent, &ColliderHandleComponent)>,
+        Query<(&mut MMOPlayer, &Transform, &RigidBodyHandleComponent)>,
         Query<&mut Transform>,
     )>,
     mut rigidbody_set: ResMut<RigidBodySet>,
@@ -220,11 +220,11 @@ fn update_player(
 
     let mut cam_positions: Vec<(Entity, Vec3)> = Vec::new();
 
-    for (mut player, transform, rigid_handle, collider) in &mut queries.q0_mut().iter_mut() {
+    for (mut player, transform, rigid_handle) in &mut queries.q0_mut().iter_mut() {
         player.camera_pitch = player
             .camera_pitch
             .max(1f32.to_radians())
-            .min(179f32.to_radians());
+            .min(90f32.to_radians());
         player.camera_distance = player.camera_distance.max(5.).min(30.);
 
         let fwd = transform.forward().normalize();
@@ -234,27 +234,23 @@ fn update_player(
         let right = right * movement.x;
 
         let direction = Vec3::from(fwd + right);
-        // if direction.length_squared() > 0 {
-        //     direction.normalize();
-        // }
 
         let rigid = rigidbody_set.get_mut(rigid_handle.handle()).unwrap();
 
-        let origin = Point3::new(transform.translation.x, transform.translation.y, transform.translation.z);
+        let origin = Point3::new(transform.translation.x, transform.translation.y + 0.3, transform.translation.z);
         let ray = Ray::new(origin, Vector3::new(0.0, -1.0, 0.0));
 
-        if let Some(interaction) = query_pipeline.cast_ray(&colliders, &ray, 0.7, InteractionGroups::all().with_mask(!InteractionFlags::PLAYER)) {
+        if let Some(_) = query_pipeline.cast_ray(&colliders, &ray, 0.5, InteractionGroups::all().with_mask(!InteractionFlags::PLAYER)) {
             player.grounded = true;
         } else {
             player.grounded = false;
         }
 
-        // if !player.grounded { direction /= 2.; }
-
         if player.grounded {
             let mut linvel: Vector3<f32> = *rigid.linvel();
             linvel.x = direction.x;
             linvel.z = direction.z;
+
             rigid.set_linvel(linvel, true);
 
             if  jump {

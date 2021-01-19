@@ -75,7 +75,7 @@
     ],
     "meshes" : [
         {
-            "name" : "Plane.001",
+            "name" : "Combined",
             "primitives" : [
                 {
                     "attributes" : {
