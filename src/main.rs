@@ -13,16 +13,17 @@ use bevy_rapier3d::{na::Point3, physics::*, rapier::dynamics::{
     }, rapier::geometry::*};
 
 use component::BuildSceneCollider;
+use resource::{InputBindingPlugin, MouseEventState};
 
 fn main() {
     App::build()
         .add_resource(Msaa { samples: 4 })
-        .init_resource::<resource::MouseState>()
+        .init_resource::<MouseEventState>()
         .add_plugins(DefaultPlugins)
+        .add_plugin(InputBindingPlugin)
         .add_plugin(RapierPhysicsPlugin)
         .add_startup_system(setup.system())
         .add_system(load_collider.system())
-        .add_system(player::process_mouse_events.system())
         .add_system(player::update_player.system())
         .run();
 }

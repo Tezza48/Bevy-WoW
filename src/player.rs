@@ -1,5 +1,6 @@
-use bevy::{input::mouse::*, prelude::*};
+use bevy::prelude::*;
 use bevy_rapier3d::{na::{Point3, UnitQuaternion, Vector3}, physics::*, rapier::{dynamics::{RigidBodyBuilder, RigidBodySet}, geometry::{ColliderBuilder, ColliderSet, InteractionGroups, Ray}, pipeline::QueryPipeline}};
+use resource::InputBindings;
 
 use crate::{
     interaction_flags,
@@ -57,40 +58,9 @@ pub fn create_instance(commands: &mut Commands) -> Entity {
     player_entity
 }
 
-pub fn process_mouse_events(
-    time: Res<Time>,
-    mut state: ResMut<resource::MouseState>,
-    motion_events: Res<Events<MouseMotion>>,
-    wheel_events: Res<Events<MouseWheel>>,
-    mut query: Query<&mut CharacterController>,
-) {
-    let mut look = Vec2::zero();
-    for event in state.mouse_motion_event_reader.iter(&motion_events) {
-        look = event.delta;
-    }
-
-    let mut zoom_delta = 0.;
-    for event in state.mouse_wheel_event_reader.iter(&wheel_events) {
-        zoom_delta = event.y;
-    }
-
-    let zoom_sense = 10.0;
-    let look_sense = 1.0;
-    let delta_seconds = time.delta_seconds();
-
-    let tau = 2. * std::f32::consts::PI;
-
-    for mut player in &mut query.iter_mut() {
-        player.yaw += look.x * delta_seconds * look_sense;
-        player.yaw = (player.yaw + tau) % tau;
-        player.camera_pitch -= look.y * delta_seconds * look_sense;
-        player.camera_distance -= zoom_delta * delta_seconds * zoom_sense;
-    }
-}
-
 pub fn update_player(
     time: Res<Time>,
-    keyboard_input: Res<Input<KeyCode>>,
+    input: Res<InputBindings>,
     query_pipeline: Res<QueryPipeline>,
     colliders: Res<ColliderSet>,
     mut queries: QuerySet<(
@@ -99,33 +69,32 @@ pub fn update_player(
     )>,
     mut rigidbody_set: ResMut<RigidBodySet>,
 ) {
-    let mut movement = Vec2::zero();
-
-    let jump = keyboard_input.just_pressed(KeyCode::Space);
-
-    if keyboard_input.pressed(KeyCode::W) {
-        movement.y += 1.;
-    }
-    if keyboard_input.pressed(KeyCode::S) {
-        movement.y -= 1.;
-    }
-    if keyboard_input.pressed(KeyCode::D) {
-        movement.x += 1.;
-    }
-    if keyboard_input.pressed(KeyCode::A) {
-        movement.x -= 1.;
-    }
+    let zoom_sense = 10.0;
+    let look_sense = 1.0;
 
     let move_speed = 500.0;
-    movement *= time.delta_seconds() * move_speed;
+
+    let tau = 2. * std::f32::consts::PI;
+
+    let delta_seconds = time.delta_seconds();
+
+    let movement = input.movement() * delta_seconds * move_speed;
+    let look = input.look() * delta_seconds * look_sense;
+    let zoom = input.scroll() * delta_seconds * zoom_sense;
 
     let mut cam_positions: Vec<(Entity, Vec3)> = Vec::new();
 
     for (mut player, transform, rigid_handle) in &mut queries.q0_mut().iter_mut() {
+        player.yaw += look.x;
+        player.yaw = (player.yaw + tau) % tau; // loop yaw within 0 - 2pi.
+        
+        player.camera_pitch += look.y;
         player.camera_pitch = player
-            .camera_pitch
-            .max(1f32.to_radians())
-            .min(90f32.to_radians());
+        .camera_pitch
+        .max(1f32.to_radians())
+        .min(90f32.to_radians()); // clamp camera pitch so the lowest it wont go under the character.
+        
+        player.camera_distance += zoom;
         player.camera_distance = player.camera_distance.max(5.).min(30.);
 
         let fwd = transform.forward().normalize();
@@ -167,7 +136,7 @@ pub fn update_player(
 
             rigid.set_linvel(linvel, true);
 
-            if jump {
+            if input.do_jump() {
                 rigid.apply_impulse(Vector3::new(0.0, 10.0, 0.0), true);
             }
         }
